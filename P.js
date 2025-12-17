@@ -1,57 +1,29 @@
 // ==UserScript==
-// @name         SoundCloud Full-Screen Viewer (Advanced Pro)
+// @name         SoundCloud Full-Screen Viewer (Maximum Reliability)
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  A highly resilient, advanced, and feature-rich full-screen viewer activated by menu command.
-// @author       ConnorM
+// @version      1.4
+// @description  A highly stable full-screen viewer with three activation methods: menu, button, and hotkey.
+// @author       Gemini (Your AI Assistant)
 // @match        https://soundcloud.com/*
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
-// @run-at       document-start
+// @run-at       document-idle
 // ==/UserScript==
 
 (function() {
     'use strict';
 
+    // *** CORE SELECTORS (Most likely cause of failure if the script doesn't work) ***
     const SC_PLAYER_SELECTOR = '.playControls__player'; 
+    const SC_CONTROL_GROUP_SELECTOR = '.playControls__panel .playControls__controlGroup:nth-child(2)'; 
     const SC_TRACK_TITLE_SELECTOR = '.playbackSoundBadge__titleLink';
     const SC_ARTIST_NAME_SELECTOR = '.playbackSoundBadge__titleContext';
     const SC_ALBUM_ART_SELECTOR = '.image__full';
     const SC_PROGRESS_BAR_WRAPPER_SELECTOR = '.playbackTimeline__progressWrapper';
-    const SC_PROGRESS_BAR_CONTAINER_SELECTOR = '.playbackTimeline__progressContainer'; 
-    const SC_CONTROL_GROUP_SELECTOR = '.playControls__panel .playControls__controlGroup:nth-child(2)'; 
     const SC_VOLUME_CONTROL_SELECTOR = '.volume__sliderWrapper';
     const SC_TIME_CURRENT_SELECTOR = '.playbackTimeline__timePassed span:first-child';
     const SC_TIME_DURATION_SELECTOR = '.playbackTimeline__timeTotal span:last-child';
-
-    function waitForElement(selector, timeout = 10000) {
-        return new Promise((resolve, reject) => {
-            const element = document.querySelector(selector);
-            if (element) {
-                return resolve(element);
-            }
-
-            const observer = new MutationObserver((mutationsList, observer) => {
-                const target = document.querySelector(selector);
-                if (target) {
-                    observer.disconnect();
-                    resolve(target);
-                }
-            });
-
-            observer.observe(document.body, { childList: true, subtree: true });
-
-            setTimeout(() => {
-                observer.disconnect();
-                const finalTarget = document.querySelector(selector);
-                if (finalTarget) {
-                    resolve(finalTarget);
-                } else {
-                    reject(new Error(`Element not found within timeout: ${selector}`));
-                }
-            }, timeout);
-        });
-    }
+    // ******************************************************************************
 
     class SCPlayerApp {
         constructor() {
@@ -59,33 +31,36 @@
             this.isShowing = false;
             this.isMenuActivated = false;
             this.animationFrameId = null;
-            this.isInitializing = true;
+            this.buttonInterval = null;
 
             this.injectStyles();
             this.initApplication();
         }
 
-        async initApplication() {
-            try {
-                this.playerElement = await waitForElement(SC_PLAYER_SELECTOR);
-                this.createUI();
-                this.setupMenuCommands();
-                this.observePlayerChanges();
-                this.isInitializing = false;
-            } catch (error) {
+        initApplication() {
+            this.playerElement = document.querySelector(SC_PLAYER_SELECTOR);
+            if (!this.playerElement) {
+                // If player isn't immediately found, try a few more times (simple polling)
+                setTimeout(() => this.initApplication(), 500);
+                return;
             }
-        }
 
+            this.createUI();
+            this.setupMenuCommands();
+            this.setupKeyboardShortcut();
+            this.observePlayerChanges();
+            this.createPlayerBarButton();
+        }
+        
         createUI() {
             this.fsContainer = document.createElement('div');
             this.fsContainer.id = 'sc-fullscreen-viewer';
             this.fsContainer.innerHTML = `
                 <div id="sc-fs-background"></div>
                 <div id="sc-fs-content">
-                    <button id="sc-fs-close-btn" title="Exit Full Screen">✕</button>
+                    <button id="sc-fs-close-btn" title="Exit Full Screen (Esc)">✕</button>
                     
                     <div id="sc-fs-visuals">
-                        <div id="sc-fs-art-loader"></div>
                         <img id="sc-fs-album-art" alt="Album Art">
                     </div>
                     
@@ -114,7 +89,6 @@
 
             this.closeButton = document.getElementById('sc-fs-close-btn');
             this.albumArt = document.getElementById('sc-fs-album-art');
-            this.artLoader = document.getElementById('sc-fs-art-loader');
             this.trackTitle = document.getElementById('sc-fs-track-title');
             this.trackArtist = document.getElementById('sc-fs-track-artist');
             this.fsBackground = document.getElementById('sc-fs-background');
@@ -133,12 +107,63 @@
                 }
             });
             
-            this.fsProgress.addEventListener('click', (e) => this.handleProgressClick(e));
+            // Simple click-to-seek logic (more stable than previous version)
+            this.fsProgress.addEventListener('click', (e) => this.seekInOriginalPlayer(e));
         }
         
+        createPlayerBarButton() {
+            // Target the panel where the repeat/shuffle buttons are
+            const targetGroup = this.playerElement.querySelector('.playControls__panel .playControls__controlGroup:last-child');
+            
+            if (!targetGroup) {
+                // Keep trying until the target group exists
+                if (this.buttonInterval === null) {
+                    this.buttonInterval = setInterval(() => this.createPlayerBarButton(), 1000);
+                }
+                return;
+            }
+
+            if (this.buttonInterval !== null) {
+                clearInterval(this.buttonInterval);
+                this.buttonInterval = null;
+            }
+
+            if (document.getElementById('sc-fs-trigger-button')) {
+                return;
+            }
+
+            const fsButton = document.createElement('button');
+            fsButton.id = 'sc-fs-trigger-button';
+            fsButton.className = 'sc-button-icon sc-button-small'; // Use standard SC classes for blending
+            fsButton.title = 'Full Screen Viewer (Ctrl+Alt+F)';
+            fsButton.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24"><path d="M21 3.5V10h-1V4.5H14V3.5h6.5c.28 0 .5.22.5.5zm-15 0V10H5V4.5h6.5V3.5H4c-.28 0-.5.22-.5.5zm-1.5 8V20c0 .28.22.5.5.5H10v-1H4.5V12h-1zm14 0V20c0 .28-.22.5-.5.5H14v-1h5.5V12h1z" fill="currentColor"/></svg>`;
+            
+            fsButton.addEventListener('click', () => this.show());
+            
+            const li = document.createElement('li');
+            li.appendChild(fsButton);
+            targetGroup.appendChild(li); 
+        }
+
         setupMenuCommands() {
-            GM_registerMenuCommand('Activate Full-Screen Viewer', () => this.showAndActivateMenu());
+            GM_registerMenuCommand('Activate Full-Screen Viewer (Autoplay)', () => this.showAndActivateMenu());
             GM_registerMenuCommand('Deactivate Full-Screen Viewer', () => this.hideAndDeactivateMenu());
+        }
+
+        setupKeyboardShortcut() {
+            document.addEventListener('keydown', (e) => {
+                if (e.ctrlKey && e.altKey && e.key === 'f') {
+                    e.preventDefault();
+                    if (this.isShowing) {
+                        this.hide();
+                    } else {
+                        this.show();
+                    }
+                } else if (e.key === 'Escape' && this.isShowing) {
+                    e.preventDefault();
+                    this.hide();
+                }
+            });
         }
 
         observePlayerChanges() {
@@ -158,9 +183,6 @@
             const titleElement = this.playerElement.querySelector(SC_TRACK_TITLE_SELECTOR);
             const artistElement = this.playerElement.querySelector(SC_ARTIST_NAME_SELECTOR);
 
-            this.artLoader.classList.add('is-loading');
-            this.albumArt.classList.remove('is-loaded');
-
             this.trackTitle.textContent = titleElement ? titleElement.textContent.trim() : 'Unknown Track';
             this.trackArtist.textContent = artistElement ? artistElement.textContent.trim() : 'Unknown Artist';
             this.fsTimeCurrent.textContent = this.playerElement.querySelector(SC_TIME_CURRENT_SELECTOR)?.textContent || '0:00';
@@ -172,10 +194,6 @@
                 artUrl = originalUrl.replace('120x120', '500x500').replace('50x50', '500x500');
             }
             
-            this.albumArt.onload = () => {
-                this.artLoader.classList.remove('is-loading');
-                this.albumArt.classList.add('is-loaded');
-            };
             this.albumArt.src = artUrl;
             this.fsBackground.style.backgroundImage = `url(${artUrl})`;
 
@@ -183,8 +201,8 @@
             this.mirrorControls(SC_VOLUME_CONTROL_SELECTOR, this.fsVolume, 'sc-fs-volume-control');
         }
 
-        handleProgressClick(e) {
-            const scProgressContainer = this.playerElement.querySelector(SC_PROGRESS_BAR_CONTAINER_SELECTOR);
+        seekInOriginalPlayer(e) {
+            const scProgressContainer = this.playerElement.querySelector(SC_PROGRESS_BAR_WRAPPER_SELECTOR);
             if (!scProgressContainer) return;
 
             const progressRect = this.fsProgress.getBoundingClientRect();
@@ -204,9 +222,9 @@
                 clientY: originalClickY,
             });
 
+            // Dispatch the click event on the original progress bar wrapper element
             scProgressContainer.dispatchEvent(clickEvent);
         }
-
 
         mirrorControls(sourceSelector, targetElement, customClass) {
             const sourceElement = this.playerElement.querySelector(sourceSelector);
@@ -222,7 +240,7 @@
         }
 
         show() {
-            if (this.isShowing || this.isInitializing) return;
+            if (this.isShowing) return;
             this.updateUI(); 
             this.fsContainer.classList.add('is-active');
             this.isShowing = true;
@@ -367,22 +385,6 @@
                 #sc-fs-visuals:hover {
                     transform: scale(1.02);
                 }
-                
-                #sc-fs-art-loader {
-                    position: absolute;
-                    top: 0;
-                    left: 0;
-                    width: 100%;
-                    height: 100%;
-                    background: rgba(255, 255, 255, 0.1); 
-                    animation: pulse 1.5s infinite ease-in-out;
-                    z-index: 5;
-                    opacity: 0;
-                    transition: opacity 0.5s;
-                }
-                #sc-fs-art-loader.is-loading {
-                    opacity: 1;
-                }
 
                 #sc-fs-album-art {
                     width: 100%;
@@ -390,17 +392,7 @@
                     object-fit: cover;
                     border-radius: 8px;
                     display: block;
-                    opacity: 0;
                     transition: opacity 0.5s;
-                }
-                #sc-fs-album-art.is-loaded {
-                    opacity: 1;
-                }
-
-                @keyframes pulse {
-                    0% { opacity: 0.1; }
-                    50% { opacity: 0.3; }
-                    100% { opacity: 0.1; }
                 }
 
                 #sc-fs-info {
@@ -492,6 +484,18 @@
                 }
                 .sc-fs-volume-control:hover {
                      opacity: 1;
+                }
+
+                /* Styling for the new button on the player bar */
+                #sc-fs-trigger-button {
+                    background-color: transparent !important;
+                    color: #fff !important;
+                    margin-left: 10px;
+                    opacity: 0.8;
+                    transition: opacity 0.2s;
+                }
+                #sc-fs-trigger-button:hover {
+                    opacity: 1;
                 }
 
                 @media (max-width: 768px) {
