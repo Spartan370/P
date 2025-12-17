@@ -1,12 +1,13 @@
 // ==UserScript==
-// @name         SoundCloud Full-Screen Viewer (UNCOMMENTED)
+// @name         SoundCloud Full-Screen Viewer (Advanced Pro)
 // @namespace    http://tampermonkey.net/
-// @version      1.1
-// @description  A beautiful, full-screen playback viewer for SoundCloud, inspired by Spotify, featuring smooth progress sync.
-// @author       Connor M
+// @version      1.3
+// @description  A highly resilient, advanced, and feature-rich full-screen viewer activated by menu command.
+// @author       ConnorM
 // @match        https://soundcloud.com/*
 // @grant        GM_addStyle
-// @run-at       document-idle
+// @grant        GM_registerMenuCommand
+// @run-at       document-start
 // ==/UserScript==
 
 (function() {
@@ -16,26 +17,63 @@
     const SC_TRACK_TITLE_SELECTOR = '.playbackSoundBadge__titleLink';
     const SC_ARTIST_NAME_SELECTOR = '.playbackSoundBadge__titleContext';
     const SC_ALBUM_ART_SELECTOR = '.image__full';
-    const SC_PROGRESS_BAR_SELECTOR = '.playbackTimeline__progressWrapper';
+    const SC_PROGRESS_BAR_WRAPPER_SELECTOR = '.playbackTimeline__progressWrapper';
+    const SC_PROGRESS_BAR_CONTAINER_SELECTOR = '.playbackTimeline__progressContainer'; 
     const SC_CONTROL_GROUP_SELECTOR = '.playControls__panel .playControls__controlGroup:nth-child(2)'; 
     const SC_VOLUME_CONTROL_SELECTOR = '.volume__sliderWrapper';
     const SC_TIME_CURRENT_SELECTOR = '.playbackTimeline__timePassed span:first-child';
     const SC_TIME_DURATION_SELECTOR = '.playbackTimeline__timeTotal span:last-child';
 
-    class SCPlayerApp {
-        constructor() {
-            this.playerElement = document.querySelector(SC_PLAYER_SELECTOR);
-            this.isShowing = false;
-            this.animationFrameId = null; 
-
-            if (!this.playerElement) {
-                return;
+    function waitForElement(selector, timeout = 10000) {
+        return new Promise((resolve, reject) => {
+            const element = document.querySelector(selector);
+            if (element) {
+                return resolve(element);
             }
 
+            const observer = new MutationObserver((mutationsList, observer) => {
+                const target = document.querySelector(selector);
+                if (target) {
+                    observer.disconnect();
+                    resolve(target);
+                }
+            });
+
+            observer.observe(document.body, { childList: true, subtree: true });
+
+            setTimeout(() => {
+                observer.disconnect();
+                const finalTarget = document.querySelector(selector);
+                if (finalTarget) {
+                    resolve(finalTarget);
+                } else {
+                    reject(new Error(`Element not found within timeout: ${selector}`));
+                }
+            }, timeout);
+        });
+    }
+
+    class SCPlayerApp {
+        constructor() {
+            this.playerElement = null;
+            this.isShowing = false;
+            this.isMenuActivated = false;
+            this.animationFrameId = null;
+            this.isInitializing = true;
+
             this.injectStyles();
-            this.createUI();
-            this.setupListeners();
-            this.observePlayerChanges();
+            this.initApplication();
+        }
+
+        async initApplication() {
+            try {
+                this.playerElement = await waitForElement(SC_PLAYER_SELECTOR);
+                this.createUI();
+                this.setupMenuCommands();
+                this.observePlayerChanges();
+                this.isInitializing = false;
+            } catch (error) {
+            }
         }
 
         createUI() {
@@ -47,6 +85,7 @@
                     <button id="sc-fs-close-btn" title="Exit Full Screen">✕</button>
                     
                     <div id="sc-fs-visuals">
+                        <div id="sc-fs-art-loader"></div>
                         <img id="sc-fs-album-art" alt="Album Art">
                     </div>
                     
@@ -75,32 +114,41 @@
 
             this.closeButton = document.getElementById('sc-fs-close-btn');
             this.albumArt = document.getElementById('sc-fs-album-art');
+            this.artLoader = document.getElementById('sc-fs-art-loader');
             this.trackTitle = document.getElementById('sc-fs-track-title');
             this.trackArtist = document.getElementById('sc-fs-track-artist');
             this.fsBackground = document.getElementById('sc-fs-background');
             this.fsControls = document.getElementById('sc-fs-controls');
             this.fsVolume = document.getElementById('sc-fs-volume');
+            this.fsProgress = document.getElementById('sc-fs-progress');
             this.fsProgressBar = document.getElementById('sc-fs-progress-bar');
             this.fsTimeCurrent = document.getElementById('sc-fs-time-current');
             this.fsTimeTotal = document.getElementById('sc-fs-time-total');
-        }
-
-        setupListeners() {
-            this.closeButton.addEventListener('click', () => this.hide());
             
-            const playerTitle = this.playerElement.querySelector(SC_TRACK_TITLE_SELECTOR);
-            if (playerTitle) {
-                 playerTitle.style.cursor = 'pointer'; 
-                 playerTitle.addEventListener('click', (e) => {
-                    e.preventDefault(); 
-                    this.show();
-                 });
-            }
+            this.closeButton.addEventListener('click', () => {
+                if (this.isMenuActivated) {
+                    this.hide(); 
+                } else {
+                    this.hideAndDeactivateMenu();
+                }
+            });
+            
+            this.fsProgress.addEventListener('click', (e) => this.handleProgressClick(e));
+        }
+        
+        setupMenuCommands() {
+            GM_registerMenuCommand('Activate Full-Screen Viewer', () => this.showAndActivateMenu());
+            GM_registerMenuCommand('Deactivate Full-Screen Viewer', () => this.hideAndDeactivateMenu());
         }
 
         observePlayerChanges() {
             const config = { childList: true, subtree: true, attributes: true, characterData: true };
-            this.observer = new new MutationObserver(() => this.updateUI());
+            this.observer = new MutationObserver(() => {
+                this.updateUI();
+                if (this.isMenuActivated && !this.isShowing) {
+                    this.show();
+                }
+            });
             this.observer.observe(this.playerElement, config);
             this.updateUI(); 
         }
@@ -109,6 +157,9 @@
             const artElement = this.playerElement.querySelector(SC_ALBUM_ART_SELECTOR);
             const titleElement = this.playerElement.querySelector(SC_TRACK_TITLE_SELECTOR);
             const artistElement = this.playerElement.querySelector(SC_ARTIST_NAME_SELECTOR);
+
+            this.artLoader.classList.add('is-loading');
+            this.albumArt.classList.remove('is-loaded');
 
             this.trackTitle.textContent = titleElement ? titleElement.textContent.trim() : 'Unknown Track';
             this.trackArtist.textContent = artistElement ? artistElement.textContent.trim() : 'Unknown Artist';
@@ -121,12 +172,41 @@
                 artUrl = originalUrl.replace('120x120', '500x500').replace('50x50', '500x500');
             }
             
+            this.albumArt.onload = () => {
+                this.artLoader.classList.remove('is-loading');
+                this.albumArt.classList.add('is-loaded');
+            };
             this.albumArt.src = artUrl;
             this.fsBackground.style.backgroundImage = `url(${artUrl})`;
 
             this.mirrorControls(SC_CONTROL_GROUP_SELECTOR, this.fsControls, 'sc-fs-main-controls');
             this.mirrorControls(SC_VOLUME_CONTROL_SELECTOR, this.fsVolume, 'sc-fs-volume-control');
         }
+
+        handleProgressClick(e) {
+            const scProgressContainer = this.playerElement.querySelector(SC_PROGRESS_BAR_CONTAINER_SELECTOR);
+            if (!scProgressContainer) return;
+
+            const progressRect = this.fsProgress.getBoundingClientRect();
+            const originalRect = scProgressContainer.getBoundingClientRect();
+
+            const clickX = e.clientX;
+            const percentage = (clickX - progressRect.left) / progressRect.width;
+
+            const originalClickX = originalRect.left + (percentage * originalRect.width);
+            const originalClickY = originalRect.top + (originalRect.height / 2);
+
+            const clickEvent = new MouseEvent('click', {
+                view: window,
+                bubbles: true,
+                cancelable: true,
+                clientX: originalClickX,
+                clientY: originalClickY,
+            });
+
+            scProgressContainer.dispatchEvent(clickEvent);
+        }
+
 
         mirrorControls(sourceSelector, targetElement, customClass) {
             const sourceElement = this.playerElement.querySelector(sourceSelector);
@@ -142,7 +222,7 @@
         }
 
         show() {
-            if (this.isShowing) return;
+            if (this.isShowing || this.isInitializing) return;
             this.updateUI(); 
             this.fsContainer.classList.add('is-active');
             this.isShowing = true;
@@ -157,9 +237,19 @@
             document.body.style.overflow = ''; 
             this.stopProgressSync();
         }
+        
+        showAndActivateMenu() {
+            this.isMenuActivated = true;
+            this.show();
+        }
+
+        hideAndDeactivateMenu() {
+            this.isMenuActivated = false;
+            this.hide();
+        }
 
         startProgressSync = () => {
-            const progressWrapper = this.playerElement.querySelector(SC_PROGRESS_BAR_SELECTOR);
+            const progressWrapper = this.playerElement.querySelector(SC_PROGRESS_BAR_WRAPPER_SELECTOR);
 
             if (progressWrapper) {
                 const scProgressElement = progressWrapper.querySelector('.playbackTimeline__progressWrapper span:nth-child(2)');
@@ -203,6 +293,7 @@
                     color: #fff;
                     font-family: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif; 
                     text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+                    backdrop-filter: blur(10px);
                 }
 
                 #sc-fullscreen-viewer.is-active {
@@ -220,7 +311,8 @@
                     background-position: center;
                     filter: blur(80px) brightness(0.4); 
                     transform: scale(1.1); 
-                    transition: all 0.5s ease-in-out;
+                    transition: all 0.8s ease-in-out;
+                    background-color: var(--fs-bg-overlay);
                 }
 
                 #sc-fs-content {
@@ -232,7 +324,7 @@
                     align-items: center;
                     justify-content: center;
                     padding: 40px 20px;
-                    background-color: var(--fs-bg-overlay); 
+                    background-color: rgba(0, 0, 0, 0.3); 
                     box-sizing: border-box;
                     max-width: 100vw;
                 }
@@ -260,6 +352,7 @@
                 }
 
                 #sc-fs-visuals {
+                    position: relative;
                     width: 40vh; 
                     max-width: 400px;
                     min-width: 200px;
@@ -269,16 +362,45 @@
                     border-radius: 8px; 
                     margin-bottom: 5vh;
                     transition: transform 0.3s ease-in-out;
+                    overflow: hidden;
                 }
+                #sc-fs-visuals:hover {
+                    transform: scale(1.02);
+                }
+                
+                #sc-fs-art-loader {
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: rgba(255, 255, 255, 0.1); 
+                    animation: pulse 1.5s infinite ease-in-out;
+                    z-index: 5;
+                    opacity: 0;
+                    transition: opacity 0.5s;
+                }
+                #sc-fs-art-loader.is-loading {
+                    opacity: 1;
+                }
+
                 #sc-fs-album-art {
                     width: 100%;
                     height: 100%;
                     object-fit: cover;
                     border-radius: 8px;
                     display: block;
+                    opacity: 0;
+                    transition: opacity 0.5s;
                 }
-                #sc-fs-visuals:hover {
-                    transform: scale(1.02);
+                #sc-fs-album-art.is-loaded {
+                    opacity: 1;
+                }
+
+                @keyframes pulse {
+                    0% { opacity: 0.1; }
+                    50% { opacity: 0.3; }
+                    100% { opacity: 0.1; }
                 }
 
                 #sc-fs-info {
@@ -317,7 +439,12 @@
                     border-radius: 3px;
                     cursor: pointer;
                     margin-bottom: 4vh;
+                    transition: height 0.1s;
                 }
+                #sc-fs-progress:hover {
+                    height: 12px;
+                }
+
                 #sc-fs-progress-bar {
                     height: 100%;
                     width: 0%; 
@@ -380,14 +507,15 @@
                     #sc-fs-controls .sc-fs-main-controls button {
                         transform: scale(2.0);
                     }
+                    .sc-fs-volume-control {
+                        transform: scale(1.2);
+                    }
                 }
             `;
             GM_addStyle(css);
         }
     }
 
-    window.addEventListener('load', () => {
-        new SCPlayerApp();
-    });
+    new SCPlayerApp();
 
 })();
